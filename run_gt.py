@@ -45,12 +45,12 @@ def run(args, logger):
             if args.model_name == "bart":
                 model = MyBart.from_pretrained(args.model_path) 
             else:
-                MyT5.from_pretrained(args.model_path)
+                model = MyT5.from_pretrained(args.model_path)
         else:
            if args.model_name == "bart":
-            model = MyBartPretrain.from_pretrained(args.model_path)
+               model = MyBartPretrain.from_pretrained(args.model_path)
            else:
-               MyT5Pretrain.from_pretrained(args.model_path)
+               model = MyT5Pretrain.from_pretrained(args.model_path)
 
         print('model parameters: ', model.num_parameters())
 
@@ -87,7 +87,7 @@ def run(args, logger):
         if args.model_name == "bart":
             model = MyBart.from_pretrained(checkpoint)
         else:
-            MyT5.from_pretrained(checkpoint)
+            model = MyT5.from_pretrained(checkpoint)
         logger.info("Loading checkpoint from {}".format(checkpoint))
         if torch.cuda.is_available():
             model.to(torch.device("cuda"))
