@@ -18,9 +18,9 @@ def main():
     parser = argparse.ArgumentParser()
 
     # Basic parameters
-    parser.add_argument("--train_file", default="train.json")
-    parser.add_argument("--predict_file", default="dev.json")
-    parser.add_argument("--knowledge_file", default="knowledge-full.json")
+    parser.add_argument("--train_file", default="/content/drive/MyDrive/AI_Vũ Lê Băng Tâm/Intern/Week 14 (18 12-22 12)/train_data.json")
+    parser.add_argument("--predict_file", default="/content/drive/MyDrive/AI_Vũ Lê Băng Tâm/Intern/Week 14 (18 12-22 12)/test_data.json")
+    parser.add_argument("--knowledge_file", default="/content/drive/MyDrive/AI_Vũ Lê Băng Tâm/Intern/Week 14 (18 12-22 12)/knowledge-full.json")
     parser.add_argument("--output_dir", default=None, type=str, required=True)
     parser.add_argument("--do_train", action='store_true')
     parser.add_argument("--do_predict", action='store_true')
@@ -29,8 +29,8 @@ def main():
 
     # Model parameters
     parser.add_argument("--model_name", type=str, default="bart")
-    parser.add_argument("--model_path", type=str, default="./bart_model")
-    parser.add_argument("--tokenizer_path", type=str, default="./bart_model")
+    parser.add_argument("--model_path", type=str, default="vinai/bartpho-syllable")
+    parser.add_argument("--tokenizer_path", type=str, default="vinai/bartpho-syllable")
     parser.add_argument("--checkpoint", type=str)
     parser.add_argument("--do_lowercase", action='store_true', default=False)
 
