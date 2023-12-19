@@ -21,7 +21,7 @@ def run(args, logger):
     if args.model_name == "bart":
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
     else:
-        tokenizer = T5Tokenizer.from_pretrained(args.tokenizer_path)
+        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
 
     if args.do_pretrain:
         print()
