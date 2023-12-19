@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.nn import CrossEntropyLoss
 
-from transformers.configuration_t5 import T5Config
+from transformers import T5Config
 from transformers.file_utils import DUMMY_INPUTS, DUMMY_MASK
 from transformers.modeling_utils import PreTrainedModel, find_pruneable_heads_and_indices, prune_linear_layer
 from torch_scatter import scatter_mean
