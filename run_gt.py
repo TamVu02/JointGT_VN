@@ -7,11 +7,11 @@ from transformers import BartTokenizer, T5Tokenizer
 from transformers import AdamW, get_linear_schedule_with_warmup
 
 from modeling_bart import MyBartForConditionalGeneration as MyBart
-from modeling_t5 import MyT5ForConditionalGeneration as MyT5
+#from modeling_t5 import MyT5ForConditionalGeneration as MyT5
 from modeling_bart import MyBartPretrain
-from modeling_t5 import MyT5Pretrain
-from data import WikidataDataset, WikidataDataLoader, WebNLGDataLoader, WebNLGDataset
-from data import evaluate_bleu
+#from modeling_t5 import MyT5Pretrain
+from data import WebNLGDataLoader, WebNLGDataset
+#from data import evaluate_bleu
 from tqdm import tqdm, trange
 import json
 
@@ -24,13 +24,14 @@ def run(args, logger):
         tokenizer = T5Tokenizer.from_pretrained(args.tokenizer_path)
 
     if args.do_pretrain:
+        print()
         # Pretrain on kgtext
-        with open(args.knowledge_file + '.json', 'r') as f:
-            kg_data = json.load(f)
-        train_dataset = WikidataDataset(logger, args, args.train_file, kg_data, tokenizer, "train")
-        dev_dataset = WikidataDataset(logger, args, args.predict_file, kg_data, tokenizer, "val")
-        train_dataloader = WikidataDataLoader(args, train_dataset, "train")
-        dev_dataloader = WikidataDataLoader(args, dev_dataset, "dev")
+        # with open(args.knowledge_file + '.json', 'r') as f:
+        #     kg_data = json.load(f)
+        # train_dataset = WikidataDataset(logger, args, args.train_file, kg_data, tokenizer, "train")
+        # dev_dataset = WikidataDataset(logger, args, args.predict_file, kg_data, tokenizer, "val")
+        # train_dataloader = WikidataDataLoader(args, train_dataset, "train")
+        # dev_dataloader = WikidataDataLoader(args, dev_dataset, "dev")
     else:
         # Finetune on webnlg / webquestions / pathquestions
         train_dataset = WebNLGDataset(logger, args, args.train_file, tokenizer, "train")
@@ -41,11 +42,13 @@ def run(args, logger):
     if args.do_train:
         # Load model parameters
         if not args.do_pretrain:
-            model = MyBart.from_pretrained(args.model_path) if args.model_name == "bart" \
-                else MyT5.from_pretrained(args.model_path)
+            if args.model_name == "bart":
+                model = MyBart.from_pretrained(args.model_path) 
+                #else MyT5.from_pretrained(args.model_path)
         else:
-            model = MyBartPretrain.from_pretrained(args.model_path) if args.model_name == "bart" \
-                else MyT5Pretrain.from_pretrained(args.model_path)
+           if args.model_name == "bart":
+            model = MyBartPretrain.from_pretrained(args.model_path)
+                #else MyT5Pretrain.from_pretrained(args.model_path)
 
         print('model parameters: ', model.num_parameters())
 
@@ -79,8 +82,9 @@ def run(args, logger):
     if args.do_predict:
         # Inference on the test set
         checkpoint = args.output_dir
-        model = MyBart.from_pretrained(checkpoint) if args.model_name == "bart" \
-            else MyT5.from_pretrained(checkpoint)
+        if args.model_name == "bart":
+            model = MyBart.from_pretrained(checkpoint)
+            #else MyT5.from_pretrained(checkpoint)
         logger.info("Loading checkpoint from {}".format(checkpoint))
         if torch.cuda.is_available():
             model.to(torch.device("cuda"))
