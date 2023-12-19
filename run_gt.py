@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import random
 
-from transformers import BartTokenizer, T5Tokenizer
+from transformers import AutoTokenizer
 from transformers import AdamW, get_linear_schedule_with_warmup
 
 from modeling_bart import MyBartForConditionalGeneration as MyBart
@@ -19,9 +19,9 @@ import json
 def run(args, logger):
     # Initialize tokenizer
     if args.model_name == "bart":
-        tokenizer = BartTokenizer.from_pretrained(args.tokenizer_path)
-    else:
-        tokenizer = T5Tokenizer.from_pretrained(args.tokenizer_path)
+        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
+    # else:
+    #     tokenizer = T5Tokenizer.from_pretrained(args.tokenizer_path)
 
     if args.do_pretrain:
         print()
