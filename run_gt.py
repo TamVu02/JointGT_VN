@@ -7,9 +7,9 @@ from transformers import AutoTokenizer
 from transformers import AdamW, get_linear_schedule_with_warmup
 
 from modeling_bart import MyBartForConditionalGeneration as MyBart
-#from modeling_t5 import MyT5ForConditionalGeneration as MyT5
+from modeling_t5 import MyT5ForConditionalGeneration as MyT5
 from modeling_bart import MyBartPretrain
-#from modeling_t5 import MyT5Pretrain
+from modeling_t5 import MyT5Pretrain
 from data import WebNLGDataLoader, WebNLGDataset
 #from data import evaluate_bleu
 from tqdm import tqdm, trange
@@ -20,8 +20,8 @@ def run(args, logger):
     # Initialize tokenizer
     if args.model_name == "bart":
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
-    # else:
-    #     tokenizer = T5Tokenizer.from_pretrained(args.tokenizer_path)
+    else:
+        tokenizer = T5Tokenizer.from_pretrained(args.tokenizer_path)
 
     if args.do_pretrain:
         print()
@@ -44,11 +44,13 @@ def run(args, logger):
         if not args.do_pretrain:
             if args.model_name == "bart":
                 model = MyBart.from_pretrained(args.model_path) 
-                #else MyT5.from_pretrained(args.model_path)
+            else:
+                MyT5.from_pretrained(args.model_path)
         else:
            if args.model_name == "bart":
             model = MyBartPretrain.from_pretrained(args.model_path)
-                #else MyT5Pretrain.from_pretrained(args.model_path)
+           else:
+               MyT5Pretrain.from_pretrained(args.model_path)
 
         print('model parameters: ', model.num_parameters())
 
@@ -84,7 +86,8 @@ def run(args, logger):
         checkpoint = args.output_dir
         if args.model_name == "bart":
             model = MyBart.from_pretrained(checkpoint)
-            #else MyT5.from_pretrained(checkpoint)
+        else:
+            MyT5.from_pretrained(checkpoint)
         logger.info("Loading checkpoint from {}".format(checkpoint))
         if torch.cuda.is_available():
             model.to(torch.device("cuda"))
@@ -286,4 +289,4 @@ def inference(model, dev_dataloader, tokenizer, args, logger, save_predictions=F
 
     data_ref = [data_ele['text'] for data_ele in dev_dataloader.dataset.data]
     assert len(predictions) == len(data_ref)
-    return evaluate_bleu(data_ref=data_ref, data_sys=predictions)
+    #return evaluate_bleu(data_ref=data_ref, data_sys=predictions)
