@@ -28,9 +28,9 @@ def main():
     parser.add_argument("--dataset", default="kgtext")
 
     # Model parameters
-    parser.add_argument("--model_name", type=str, default="bart")
-    parser.add_argument("--model_path", type=str, default="vinai/bartpho-syllable")
-    parser.add_argument("--tokenizer_path", type=str, default="vinai/bartpho-syllable")
+    parser.add_argument("--model_name", type=str, default="t5")
+    parser.add_argument("--model_path", type=str, default="VietAI/vit5-base")
+    parser.add_argument("--tokenizer_path", type=str, default="VietAI/vit5-base")
     parser.add_argument("--checkpoint", type=str)
     parser.add_argument("--do_lowercase", action='store_true', default=False)
 
