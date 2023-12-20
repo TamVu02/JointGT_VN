@@ -4,12 +4,12 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python /content/JointGT_VN/cli_gt.py \
         --do_train \
         --do_pretrain \
         --model_name t5 \
-        --model_path pretrain_model/t5 \
-        --tokenizer_path pretrain_model/t5 \
+        --model_path VietAI/vit5-base \
+        --tokenizer_path VietAI/vit5-base \
         --output_dir pretrain_model/jointgt_t5 \
-        --train_file kgpt/dataset/wikidata/train \
-        --predict_file kgpt/dataset/wikidata/val \
-        --knowledge_file kgpt/preprocess/knowledge-full \
+        --train_file /content/train_data \
+        --predict_file /content/test_data \
+        --knowledge_file /content/knowledge-full \
         --train_batch_size 32 \
         --predict_batch_size 32 \
         --max_input_length 600 \
