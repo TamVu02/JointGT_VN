@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CUDA_VISIBLE_DEVICES=0,1,2,3 python cli_gt.py \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python /content/JointGT_VN/cli_gt.py \
         --do_train \
         --do_pretrain \
         --model_name t5 \
