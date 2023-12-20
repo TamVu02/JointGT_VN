@@ -32,6 +32,10 @@ def run(args, logger):
         # dev_dataset = WikidataDataset(logger, args, args.predict_file, kg_data, tokenizer, "val")
         # train_dataloader = WikidataDataLoader(args, train_dataset, "train")
         # dev_dataloader = WikidataDataLoader(args, dev_dataset, "dev")
+        train_dataset = WebNLGDataset(logger, args, args.train_file, tokenizer, "train")
+        dev_dataset = WebNLGDataset(logger, args, args.predict_file, tokenizer, "val")
+        train_dataloader = WebNLGDataLoader(args, train_dataset, "train")
+        dev_dataloader = WebNLGDataLoader(args, dev_dataset, "dev")
     else:
         # Finetune on webnlg / webquestions / pathquestions
         train_dataset = WebNLGDataset(logger, args, args.train_file, tokenizer, "train")
