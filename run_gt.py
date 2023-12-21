@@ -24,18 +24,13 @@ def run(args, logger):
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
 
     if args.do_pretrain:
-        print()
-        # Pretrain on kgtext
-        # with open(args.knowledge_file + '.json', 'r') as f:
-        #     kg_data = json.load(f)
-        # train_dataset = WikidataDataset(logger, args, args.train_file, kg_data, tokenizer, "train")
-        # dev_dataset = WikidataDataset(logger, args, args.predict_file, kg_data, tokenizer, "val")
-        # train_dataloader = WikidataDataLoader(args, train_dataset, "train")
-        # dev_dataloader = WikidataDataLoader(args, dev_dataset, "dev")
-        train_dataset = WebNLGDataset(logger, args, args.train_file, tokenizer, "train")
-        dev_dataset = WebNLGDataset(logger, args, args.predict_file, tokenizer, "val")
-        train_dataloader = WebNLGDataLoader(args, train_dataset, "train")
-        dev_dataloader = WebNLGDataLoader(args, dev_dataset, "dev")
+        #Pretrain on kgtext
+        with open(args.knowledge_file + '.json', 'r') as f:
+            kg_data = json.load(f)
+        train_dataset = WikidataDataset(logger, args, args.train_file, kg_data, tokenizer, "train")
+        dev_dataset = WikidataDataset(logger, args, args.predict_file, kg_data, tokenizer, "val")
+        train_dataloader = WikidataDataLoader(args, train_dataset, "train")
+        dev_dataloader = WikidataDataLoader(args, dev_dataset, "dev")
     else:
         # Finetune on webnlg / webquestions / pathquestions
         train_dataset = WebNLGDataset(logger, args, args.train_file, tokenizer, "train")
