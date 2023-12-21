@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CUDA_VISIBLE_DEVICES=0,1 /content/JointGT_VN/cli_gt.py \
+CUDA_VISIBLE_DEVICES=0,1 python /content/JointGT_VN/cli_gt.py \
         --do_train \
         --model_name t5 \
         --output_dir out/jointgt_t5_webnlg \
