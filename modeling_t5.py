@@ -1680,7 +1680,9 @@ class MyT5Pretrain(T5ForConditionalGeneration):
 
         encoder_config = copy.deepcopy(config)
         encoder_config.use_cache = False
-        self.encoder = T5StructStack(encoder_config, self.shared)
+        #self.encoder = T5StructStack(encoder_config, self.shared)
+        self.encoder = T5Stack(encoder_config, self.shared)
+        
 
         decoder_config = copy.deepcopy(config)
         decoder_config.is_decoder = True
