@@ -636,6 +636,18 @@ class WikidataDataset(Dataset):
                input_ids_ot, attn_mask_ot, decoder_label_ids_ot, decoder_attn_mask_ot, decoder_whole_ids_ot, \
                input_node_ids_ot, input_edge_ids_ot, node_length_ot, edge_length_ot, word_length_ot, adj_matrix_ot
 
+class WikidataDataLoader(DataLoader):
+
+    def __init__(self, args, dataset, mode):
+        if mode == "train":
+            sampler = RandomSampler(dataset)
+            batch_size = args.train_batch_size
+        else:
+            sampler = SequentialSampler(dataset)
+            batch_size = args.predict_batch_size
+        super(WikidataDataLoader, self).__init__(dataset, sampler=sampler, batch_size=batch_size,
+                                                 num_workers=args.num_workers)
+
 class WebNLGDataLoader(DataLoader):
 
     def __init__(self, args, dataset, mode):
