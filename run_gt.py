@@ -10,7 +10,7 @@ from modeling_bart import MyBartForConditionalGeneration as MyBart
 from modeling_t5 import MyT5ForConditionalGeneration as MyT5
 from modeling_bart import MyBartPretrain
 from modeling_t5 import MyT5Pretrain
-from data import WebNLGDataLoader, WebNLGDataset
+from data import WikidataDataset, WikidataDataLoader, WebNLGDataLoader, WebNLGDataset
 #from data import evaluate_bleu
 from tqdm import tqdm, trange
 import json
