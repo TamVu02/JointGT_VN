@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CUDA_VISIBLE_DEVICES=0,1,2,3 python /content/JointGT_VN/cli_gt.py \
+CUDA_VISIBLE_DEVICES=0 python /content/JointGT_VN/cli_gt.py \
         --do_train \
         --do_pretrain \
         --model_name t5 \
@@ -10,8 +10,8 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python /content/JointGT_VN/cli_gt.py \
         --train_file /content/drive/MyDrive/jointgt_data/w_train \
         --predict_file /content/drive/MyDrive/jointgt_data/w_test \
         --knowledge_file /content/drive/MyDrive/jointgt_data/knowledge-full \
-        --train_batch_size 32 \
-        --predict_batch_size 32 \
+        --train_batch_size 2 \
+        --predict_batch_size 2 \
         --max_input_length 2000 \
         --max_output_length 64 \
         --gradient_accumulation_steps 8 \
@@ -20,4 +20,4 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python /content/JointGT_VN/cli_gt.py \
         --warmup_steps 2700 \
         --eval_period 3000 \
         --save_period 40000 \
-        --num_workers 4
+        --num_workers 1
