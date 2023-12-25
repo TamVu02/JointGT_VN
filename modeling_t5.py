@@ -137,8 +137,8 @@ class T5LayerNorm(nn.Module):
         variance = x.to(torch.float32).pow(2).mean(-1, keepdim=True)
         x = x / torch.sqrt(variance + self.variance_epsilon)
 
-        if self.weight.dtype == torch.float16:
-            x = x.to(torch.float16)
+        if self.weight.dtype in [torch.float16, torch.bfloat16]::
+            x = x.to(self.weight.dtype)
         return self.weight * x
 
 
@@ -176,8 +176,8 @@ class T5Attention(nn.Module):
         super().__init__()
         self.is_decoder = config.is_decoder
         self.has_relative_attention_bias = has_relative_attention_bias
-
         self.relative_attention_num_buckets = config.relative_attention_num_buckets
+        self.relative_attention_max_distance = config.relative_attention_max_distance
         self.d_model = config.d_model
         self.d_kv = config.d_kv
         self.n_heads = config.num_heads
@@ -193,6 +193,7 @@ class T5Attention(nn.Module):
         if self.has_relative_attention_bias:
             self.relative_attention_bias = nn.Embedding(self.relative_attention_num_buckets, self.n_heads)
         self.pruned_heads = set()
+        self.gradient_checkpointing = False
 
     def prune_heads(self, heads):
         if len(heads) == 0:
@@ -258,6 +259,8 @@ class T5Attention(nn.Module):
 
     def compute_bias(self, qlen, klen):
         """ Compute binned relative position bias """
+        if device is None:
+            device = self.relative_attention_bias.weight.device
         context_position = torch.arange(qlen, dtype=torch.long)[:, None]
         memory_position = torch.arange(klen, dtype=torch.long)[None, :]
         relative_position = memory_position - context_position  # shape (qlen, klen)
@@ -265,6 +268,7 @@ class T5Attention(nn.Module):
             relative_position,  # shape (qlen, klen)
             bidirectional=not self.is_decoder,
             num_buckets=self.relative_attention_num_buckets,
+            max_distance=self.relative_attention_max_distance,
         )
         rp_bucket = rp_bucket.to(self.relative_attention_bias.weight.device)
         values = self.relative_attention_bias(rp_bucket)  # shape (qlen, klen, num_heads)
@@ -278,7 +282,7 @@ class T5Attention(nn.Module):
         kv=None,
         position_bias=None,
         past_key_value_state=None,
-        head_mask=None,
+        layer_head_mask=None,
         query_length=None,
         use_cache=False,
         output_attentions=False,
@@ -358,8 +362,8 @@ class T5Attention(nn.Module):
         weights = F.dropout(weights, p=self.dropout, training=self.training)  # (bs, n_heads, qlen, klen)
 
         # Mask heads if we want to
-        if head_mask is not None:
-            weights = weights * head_mask
+        if layer_head_mask is not None:
+            weights = weights * layer_head_mask
 
         context = torch.matmul(weights, v)  # (bs, n_heads, qlen, dim_per_head)
         context = unshape(context)  # (bs, qlen, dim)
@@ -487,7 +491,7 @@ class T5StructAttention(nn.Module):
         kv=None,
         position_bias=None,
         past_key_value_state=None,
-        head_mask=None,
+        layer_head_mask=None,
         query_length=None,
         use_cache=False,
         output_attentions=False,
@@ -560,8 +564,8 @@ class T5StructAttention(nn.Module):
         weights = F.dropout(weights, p=self.dropout, training=self.training)  # bs * n_heads * qlen * klen
 
         # Mask heads if we want to
-        if head_mask is not None:
-            weights = weights * head_mask
+        if layer_head_mask is not None:
+            weights = weights * layer_head_mask
 
         context = torch.matmul(weights, v)  # bs * n_heads * qlen * dim_per_head
 
@@ -594,7 +598,7 @@ class T5LayerSelfAttention(nn.Module):
         hidden_states,
         attention_mask=None,
         position_bias=None,
-        head_mask=None,
+        layer_head_mask=None,
         past_key_value_state=None,
         use_cache=False,
         output_attentions=False,
@@ -604,7 +608,7 @@ class T5LayerSelfAttention(nn.Module):
             norm_x,
             mask=attention_mask,
             position_bias=position_bias,
-            head_mask=head_mask,
+            layer_head_mask=layer_head_mask,
             past_key_value_state=past_key_value_state,
             use_cache=use_cache,
             output_attentions=output_attentions,
@@ -636,7 +640,7 @@ class T5StructLayerSelfAttention(nn.Module):
         extended_edge_attention_mask=None,
         adj_matrix=None,
         position_bias=None,
-        head_mask=None,
+        layer_head_mask=None,
         past_key_value_state=None,
         use_cache=False,
         output_attentions=False,
@@ -646,7 +650,7 @@ class T5StructLayerSelfAttention(nn.Module):
             norm_x,
             mask=attention_mask,
             position_bias=position_bias,
-            head_mask=head_mask,
+            layer_head_mask=layer_head_mask,
             past_key_value_state=past_key_value_state,
             use_cache=use_cache,
             output_attentions=output_attentions,
@@ -672,7 +676,7 @@ class T5StructLayerSelfAttention(nn.Module):
 
         struct_attention_output = self.SelfStructAttention(
             x_node, mask=extended_node_attention_mask, position_bias=None,
-            head_mask=head_mask, past_key_value_state=past_key_value_state, use_cache=use_cache,
+            layer_head_mask=layer_head_mask, past_key_value_state=past_key_value_state, use_cache=use_cache,
             output_attentions=output_attentions, adj_matrix_emb=adj_matrix_emb,
         )
         x_node = struct_attention_output[0]
@@ -698,7 +702,7 @@ class T5LayerCrossAttention(nn.Module):
         kv,
         attention_mask=None,
         position_bias=None,
-        head_mask=None,
+        layer_head_mask=None,
         past_key_value_state=None,
         use_cache=False,
         query_length=None,
@@ -710,7 +714,7 @@ class T5LayerCrossAttention(nn.Module):
             mask=attention_mask,
             kv=kv,
             position_bias=position_bias,
-            head_mask=head_mask,
+            layer_head_mask=layer_head_mask,
             past_key_value_state=past_key_value_state,
             use_cache=use_cache,
             query_length=query_length,
@@ -741,10 +745,12 @@ class T5Block(nn.Module):
         encoder_hidden_states=None,
         encoder_attention_mask=None,
         encoder_decoder_position_bias=None,
-        head_mask=None,
+        layer_head_mask=None,
+        cross_attn_layer_head_mask=None,
         past_key_value_state=None,
         use_cache=False,
         output_attentions=False,
+        return_dict=True
     ):
 
         if past_key_value_state is not None:
@@ -767,7 +773,7 @@ class T5Block(nn.Module):
             hidden_states,
             attention_mask=attention_mask,
             position_bias=position_bias,
-            head_mask=head_mask,
+            layer_head_mask=layer_head_mask,
             past_key_value_state=self_attn_past_key_value_state,
             use_cache=use_cache,
             output_attentions=output_attentions,
@@ -775,25 +781,44 @@ class T5Block(nn.Module):
         hidden_states, present_key_value_state = self_attention_outputs[:2]
         attention_outputs = self_attention_outputs[2:]  # Keep self-attention outputs and relative position weights
 
-        if self.is_decoder and encoder_hidden_states is not None:
-            # the actual query length is unknown for cross attention
-            # if using past key value states. Need to inject it here
-            if present_key_value_state is not None:
-                query_length = present_key_value_state[0].shape[2]
-            else:
-                query_length = None
+        # clamp inf values to enable fp16 training
+        if hidden_states.dtype == torch.float16:
+            clamp_value = torch.where(
+                torch.isinf(hidden_states).any(),
+                torch.finfo(hidden_states.dtype).max - 1000,
+                torch.finfo(hidden_states.dtype).max,
+            )
+            hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
+
+        do_cross_attention = self.is_decoder and encoder_hidden_states is not None
+        if do_cross_attention:
+            if self.is_decoder and encoder_hidden_states is not None:
+                # the actual query length is unknown for cross attention
+                # if using past key value states. Need to inject it here
+                if present_key_value_state is not None:
+                    query_length = present_key_value_state[0].shape[2]
+                else:
+                    query_length = None
 
             cross_attention_outputs = self.layer[1](
                 hidden_states,
                 kv=encoder_hidden_states,
                 attention_mask=encoder_attention_mask,
                 position_bias=encoder_decoder_position_bias,
-                head_mask=head_mask,
+                layer_head_mask=cross_attn_layer_head_mask
                 past_key_value_state=cross_attn_past_key_value_state,
                 query_length=query_length,
                 use_cache=use_cache,
                 output_attentions=output_attentions,
             )
+            if hidden_states.dtype == torch.float16:
+                clamp_value = torch.where(
+                    torch.isinf(hidden_states).any(),
+                    torch.finfo(hidden_states.dtype).max - 1000,
+                    torch.finfo(hidden_states.dtype).max,
+                )
+                hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
+
             hidden_states = cross_attention_outputs[0]
             # Combine self attn and cross attn key value states
             if present_key_value_state is not None:
@@ -804,10 +829,21 @@ class T5Block(nn.Module):
 
         # Apply Feed Forward layer
         hidden_states = self.layer[-1](hidden_states)
-        outputs = (hidden_states,)
+        # clamp inf values to enable fp16 training
+        if hidden_states.dtype == torch.float16:
+            clamp_value = torch.where(
+                torch.isinf(hidden_states).any(),
+                torch.finfo(hidden_states.dtype).max - 1000,
+                torch.finfo(hidden_states.dtype).max,
+            )
+            hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
 
-        # Add attentions if we output them
-        outputs = outputs + (present_key_value_state,) + attention_outputs
+        outputs = (hidden_states,)
+        if use_cache:
+            outputs = outputs + (present_key_value_state,) + attention_outputs
+        else:
+            outputs = outputs + attention_outputs
+            
         return outputs  # hidden-states, present_key_value_states, (self-attention weights), (self-attention position bias), (cross-attention weights), (cross-attention position bias)
 
 
@@ -838,10 +874,12 @@ class T5StructBlock(nn.Module):
         encoder_hidden_states=None,
         encoder_attention_mask=None,
         encoder_decoder_position_bias=None,
-        head_mask=None,
+        layer_head_mask=None,
+        cross_attn_layer_head_mask=None,
         past_key_value_state=None,
         use_cache=False,
         output_attentions=False,
+        return_dict=True,
     ):
 
         if past_key_value_state is not None:
@@ -871,7 +909,7 @@ class T5StructBlock(nn.Module):
             extended_edge_attention_mask=extended_edge_attention_mask,
             adj_matrix=adj_matrix,
             position_bias=position_bias,
-            head_mask=head_mask,
+            layer_head_mask=layer_head_mask,
             past_key_value_state=self_attn_past_key_value_state,
             use_cache=use_cache,
             output_attentions=output_attentions,
@@ -879,26 +917,48 @@ class T5StructBlock(nn.Module):
         hidden_states, present_key_value_state = self_attention_outputs[:2]
         attention_outputs = self_attention_outputs[2:]  # Keep self-attention outputs and relative position weights
 
-        if self.is_decoder and encoder_hidden_states is not None:
+        if hidden_states.dtype == torch.float16:
+            clamp_value = torch.where(
+                torch.isinf(hidden_states).any(),
+                torch.finfo(hidden_states.dtype).max - 1000,
+                torch.finfo(hidden_states.dtype).max,
+            )
+            hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
+
+        do_cross_attention = self.is_decoder and encoder_hidden_states is not None
+        if do_cross_attention:
             # the actual query length is unknown for cross attention
             # if using past key value states. Need to inject it here
-            if present_key_value_state is not None:
-                query_length = present_key_value_state[0].shape[2]
-            else:
-                query_length = None
+            if self.is_decoder and encoder_hidden_states is not None:
+            # the actual query length is unknown for cross attention
+            # if using past key value states. Need to inject it here
+                if present_key_value_state is not None:
+                    query_length = present_key_value_state[0].shape[2]
+                else:
+                    query_length = None
 
             cross_attention_outputs = self.layer[1](
                 hidden_states,
                 kv=encoder_hidden_states,
                 attention_mask=encoder_attention_mask,
                 position_bias=encoder_decoder_position_bias,
-                head_mask=head_mask,
+                layer_head_mask=layer_head_mask,
                 past_key_value_state=cross_attn_past_key_value_state,
                 query_length=query_length,
                 use_cache=use_cache,
                 output_attentions=output_attentions,
             )
             hidden_states = cross_attention_outputs[0]
+            
+            # clamp inf values to enable fp16 training
+            if hidden_states.dtype == torch.float16:
+                clamp_value = torch.where(
+                    torch.isinf(hidden_states).any(),
+                    torch.finfo(hidden_states.dtype).max - 1000,
+                    torch.finfo(hidden_states.dtype).max,
+                )
+                hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
+
             # Combine self attn and cross attn key value states
             if present_key_value_state is not None:
                 present_key_value_state = present_key_value_state + cross_attention_outputs[1]
@@ -908,10 +968,21 @@ class T5StructBlock(nn.Module):
 
         # Apply Feed Forward layer
         hidden_states = self.layer[-1](hidden_states)
-        outputs = (hidden_states,)
+        # clamp inf values to enable fp16 training
+        if hidden_states.dtype == torch.float16:
+            clamp_value = torch.where(
+                torch.isinf(hidden_states).any(),
+                torch.finfo(hidden_states.dtype).max - 1000,
+                torch.finfo(hidden_states.dtype).max,
+            )
+            hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
 
-        # Add attentions if we output them
-        outputs = outputs + (present_key_value_state,) + attention_outputs
+        outputs = (hidden_states,)
+        if use_cache:
+            outputs = outputs + (present_key_value_state,) + attention_outputs
+        else:
+            outputs = outputs + attention_outputs
+            
         return outputs  # hidden-states, present_key_value_states, (self-attention weights), (self-attention position bias), (cross-attention weights), (cross-attention position bias)
 
 
@@ -923,6 +994,10 @@ class T5PreTrainedModel(PreTrainedModel):
     config_class = T5Config
     load_tf_weights = load_tf_weights_in_t5
     base_model_prefix = "transformer"
+    is_parallelizable = True
+    supports_gradient_checkpointing = True
+    _no_split_modules = ["T5Block"]
+    _keep_in_fp32_modules = ["wo"]
 
     @property
     def dummy_inputs(self):
@@ -1021,10 +1096,12 @@ class T5Stack(T5PreTrainedModel):
         encoder_attention_mask=None,
         inputs_embeds=None,
         head_mask=None,
+        cross_attn_head_mask=None,
         past_key_value_states=None,
         use_cache=None,
         output_attentions=None,
         output_hidden_states=None,
+        return_dict=None,
     ):
 
         use_cache = use_cache if use_cache is not None else self.config.use_cache
@@ -1051,6 +1128,13 @@ class T5Stack(T5PreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         batch_size, seq_length = input_shape
+
+        # required mask seq length can be calculated via length of past
+        mask_seq_length = past_key_values[0][0].shape[2] + seq_length if past_key_values is not None else seq_length
+
+        if use_cache is True:
+            if not self.is_decoder:
+                raise ValueError(f"`use_cache` can only be set to `True` if {self} is used as a decoder")
 
         if past_key_value_states is not None:
             assert seq_length == 1, "Input shape is {}, but should be {} when using past_key_value_sates".format(
