@@ -14,11 +14,13 @@ import torch.nn.functional as F
 from torch import nn
 from torch.nn import CrossEntropyLoss
 
-from transformers import T5Config
-from transformers.file_utils import DUMMY_INPUTS, DUMMY_MASK
+from transformers import T5Config, BeamSearchScorer, LogitsProcessorList, MinLengthLogitsProcessor
+from transformers.file_utils import DUMMY_INPUTS, DUMMY_MASK, ModelOutput
 from transformers.modeling_utils import PreTrainedModel, find_pruneable_heads_and_indices, prune_linear_layer
 from torch_scatter import scatter_mean
 from ot import optimal_transport_dist
+
+from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
 
 
 logger = logging.getLogger(__name__)
@@ -1145,14 +1147,27 @@ class T5Stack(T5PreTrainedModel):
             mask_seq_length = past_key_value_states[0][0].shape[2] + seq_length
         else:
             mask_seq_length = seq_length
+            
+         if past_key_value_states is None:
+            past_key_value_states = [None] * len(self.block)
 
         if attention_mask is None:
             attention_mask = torch.ones(batch_size, mask_seq_length).to(inputs_embeds.device)
-        if self.is_decoder and encoder_attention_mask is None and encoder_hidden_states is not None:
+       # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
+        # ourselves in which case we just need to make it broadcastable to all heads.
+        extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape)
+
+        if self.is_decoder and encoder_attention_mask is None and encoder_hidden_states is not None
+            encoder_batch_size, encoder_sequence_length, _ = encoder_hidden_states.size()
+            encoder_hidden_shape = (encoder_batch_size, encoder_sequence_length)
             encoder_seq_length = encoder_hidden_states.shape[1]
-            encoder_attention_mask = torch.ones(
-                batch_size, encoder_seq_length, device=inputs_embeds.device, dtype=torch.long
-            )
+             if encoder_attention_mask is None:
+                encoder_attention_mask = torch.ones(
+                    encoder_hidden_shape, device=inputs_embeds.device, dtype=torch.long
+                )
+            encoder_extended_attention_mask = self.invert_attention_mask(encoder_attention_mask)
+        else:
+            encoder_extended_attention_mask = None
 
         # initialize past_key_value_states with `None` if past does not exist
         if past_key_value_states is None:
@@ -1162,39 +1177,56 @@ class T5Stack(T5PreTrainedModel):
         # after this, zero means attending while -10000.0 means no attending
         extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape, inputs_embeds.device)
 
-        if self.is_decoder and encoder_attention_mask is not None:
-            encoder_extended_attention_mask = self.invert_attention_mask(encoder_attention_mask)
-        else:
-            encoder_extended_attention_mask = None
-
         # Prepare head mask if needed
         head_mask = self.get_head_mask(head_mask, self.config.num_layers)
         present_key_value_states = ()
-        all_hidden_states = ()
-        all_attentions = ()
-        position_bias = None
-        encoder_decoder_position_bias = None
+        cross_attn_head_mask = self.get_head_mask(cross_attn_head_mask, self.config.num_layers)
+        present_key_value_states = () if use_cache else None
+        all_hidden_states = () if output_hidden_states else None
+        all_attentions = () if output_attentions else None
+        all_cross_attentions = () if (output_attentions and self.is_decoder) else None
 
         hidden_states = self.dropout(inputs_embeds)
 
         for i, (layer_module, past_key_value_state) in enumerate(zip(self.block, past_key_value_states)):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
+            layer_head_mask = head_mask[i]
+            cross_attn_layer_head_mask = cross_attn_head_mask[i]
 
-            layer_outputs = layer_module(
-                hidden_states,
-                attention_mask=extended_attention_mask,
-                position_bias=position_bias,
-                encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=encoder_extended_attention_mask,
-                encoder_decoder_position_bias=encoder_decoder_position_bias,
-                head_mask=head_mask[i],
-                past_key_value_state=past_key_value_state,
-                use_cache=use_cache,
-                output_attentions=output_attentions,
-            )
+             if self.gradient_checkpointing and self.training:
+                layer_outputs = self._gradient_checkpointing_func(
+                    layer_module.forward,
+                    hidden_states,
+                    extended_attention_mask,
+                    position_bias,
+                    encoder_hidden_states,
+                    encoder_extended_attention_mask,
+                    encoder_decoder_position_bias,
+                    layer_head_mask,
+                    cross_attn_layer_head_mask,
+                    None,  # past_key_value is always None with gradient checkpointing
+                    use_cache,
+                    output_attentions,
+                )
+            else:
+                layer_outputs = layer_module(
+                    hidden_states,
+                    attention_mask=extended_attention_mask,
+                    position_bias=position_bias,
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=encoder_extended_attention_mask,
+                    encoder_decoder_position_bias=encoder_decoder_position_bias,
+                    layer_head_mask=layer_head_mask,
+                    cross_attn_layer_head_mask=cross_attn_layer_head_mask,
+                    past_key_value=past_key_value,
+                    use_cache=use_cache,
+                    output_attentions=output_attentions,
+                )
             # layer_outputs is a tuple with:
             # hidden-states, key-value-states, (self-attention weights), (self-attention position bias), (cross-attention weights), (cross-attention position bias)
+            if use_cache is False:
+                layer_outputs = layer_outputs[:1] + (None,) + layer_outputs[1:]
             hidden_states, present_key_value_state = layer_outputs[:2]
 
             if i == 0:
@@ -1208,6 +1240,8 @@ class T5Stack(T5PreTrainedModel):
 
             if output_attentions:
                 all_attentions = all_attentions + (layer_outputs[2],)  # We keep only self-attention weights for now
+                if self.is_decoder:
+                    all_cross_attentions = all_cross_attentions + (layer_outputs[5],)
 
         hidden_states = self.final_layer_norm(hidden_states)
         hidden_states = self.dropout(hidden_states)
@@ -1224,7 +1258,27 @@ class T5Stack(T5PreTrainedModel):
             outputs = outputs + (all_hidden_states,)
         if output_attentions:
             outputs = outputs + (all_attentions,)
-        return outputs  # last-layer hidden state, (presents,) (all hidden states), (all attentions)
+        #return outputs  # last-layer hidden state, (presents,) (all hidden states), (all attentions)
+        #return outputs  # last-layer hidden state, (presents,) (all hidden states), (all attentions)
+        if not return_dict:
+            return tuple(
+                v
+                for v in [
+                    hidden_states,
+                    present_key_value_states,
+                    all_hidden_states,
+                    all_attentions,
+                    all_cross_attentions,
+                ]
+                if v is not None
+            )
+        return BaseModelOutputWithPastAndCrossAttentions(
+            last_hidden_state=hidden_states,
+            past_key_values=present_key_value_states,
+            hidden_states=all_hidden_states,
+            attentions=all_attentions,
+            cross_attentions=all_cross_attentions,
+        )
 
 
 def convert_length_to_mask(len_list, max_length):
@@ -1279,6 +1333,7 @@ class T5StructStack(T5PreTrainedModel):
         use_cache=None,
         output_attentions=None,
         output_hidden_states=None,
+        return_dict=None,
     ):
 
         use_cache = use_cache if use_cache is not None else self.config.use_cache
@@ -1340,22 +1395,31 @@ class T5StructStack(T5PreTrainedModel):
         extended_node_attention_mask = self.get_extended_attention_mask(node_attention_mask, (batch_size, input_node_ids.max()+1), input_node_ids.device)
         extended_edge_attention_mask = self.get_extended_attention_mask(edge_attention_mask, (batch_size, input_edge_ids.max()+1), input_edge_ids.device)
 
-        if self.is_decoder and encoder_attention_mask is not None:
+        if self.is_decoder and encoder_hidden_states is not None:
+            encoder_batch_size, encoder_sequence_length, _ = encoder_hidden_states.size()
+            encoder_hidden_shape = (encoder_batch_size, encoder_sequence_length)
+            if encoder_attention_mask is None:
+                encoder_attention_mask = torch.ones(
+                    encoder_hidden_shape, device=inputs_embeds.device, dtype=torch.long
+                )
             encoder_extended_attention_mask = self.invert_attention_mask(encoder_attention_mask)
         else:
             encoder_extended_attention_mask = None
 
         # Prepare head mask if needed
         head_mask = self.get_head_mask(head_mask, self.config.num_layers)
-        present_key_value_states = ()
-        all_hidden_states = ()
-        all_attentions = ()
+        cross_attn_head_mask = self.get_head_mask(cross_attn_head_mask, self.config.num_layers)
+        present_key_value_states = () if use_cache else None
+        all_hidden_states = () if output_hidden_states else None
+        all_attentions = () if output_attentions else None
+        all_cross_attentions = () if (output_attentions and self.is_decoder) else None
         position_bias = None
         encoder_decoder_position_bias = None
-
         hidden_states = self.dropout(inputs_embeds)
 
         for i, (layer_module, past_key_value_state) in enumerate(zip(self.block, past_key_value_states)):
+            layer_head_mask = head_mask[i]
+            cross_attn_layer_head_mask = cross_attn_head_mask[i]
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
@@ -1380,6 +1444,8 @@ class T5StructStack(T5PreTrainedModel):
             )
             # layer_outputs is a tuple with:
             # hidden-states, key-value-states, (self-attention weights), (self-attention position bias), (cross-attention weights), (cross-attention position bias)
+            if use_cache is False:
+                layer_outputs = layer_outputs[:1] + (None,) + layer_outputs[1:]
             hidden_states, present_key_value_state = layer_outputs[:2]
 
             if i == 0:
@@ -1393,6 +1459,8 @@ class T5StructStack(T5PreTrainedModel):
 
             if output_attentions:
                 all_attentions = all_attentions + (layer_outputs[2],)  # We keep only self-attention weights for now
+                   if self.is_decoder:
+                    all_cross_attentions = all_cross_attentions + (layer_outputs[5],)
 
         hidden_states = self.final_layer_norm(hidden_states)
         hidden_states = self.dropout(hidden_states)
@@ -1409,7 +1477,33 @@ class T5StructStack(T5PreTrainedModel):
             outputs = outputs + (all_hidden_states,)
         if output_attentions:
             outputs = outputs + (all_attentions,)
-        return outputs  # last-layer hidden state, (presents,) (all hidden states), (all attentions)
+            if self.is_decoder:
+                    all_cross_attentions = all_cross_attentions + (layer_outputs[5],)
+        # Add last layer
+        if output_hidden_states:
+            all_hidden_states = all_hidden_states + (hidden_states,)
+            
+        #return outputs  # last-layer hidden state, (presents,) (all hidden states), (all attentions)
+        #return outputs  # last-layer hidden state, (presents,) (all hidden states), (all attentions)
+        if not return_dict:
+            return tuple(
+                v
+                for v in [
+                    hidden_states,
+                    present_key_value_states,
+                    all_hidden_states,
+                    all_attentions,
+                    all_cross_attentions,
+                ]
+                if v is not None
+            )
+        return BaseModelOutputWithPastAndCrossAttentions(
+            last_hidden_state=hidden_states,
+            past_key_values=present_key_value_states,
+            hidden_states=all_hidden_states,
+            attentions=all_attentions,
+            cross_attentions=all_cross_attentions,
+        )
 
 
 class T5Model(T5PreTrainedModel):
@@ -1419,10 +1513,13 @@ class T5Model(T5PreTrainedModel):
 
         encoder_config = copy.deepcopy(config)
         encoder_config.use_cache = False
+         encoder_config.is_encoder_decoder = False
         self.encoder = T5Stack(encoder_config, self.shared)
 
         decoder_config = copy.deepcopy(config)
         decoder_config.is_decoder = True
+        decoder_config.is_encoder_decoder = False
+        decoder_config.num_layers = config.num_decoder_layers
         self.decoder = T5Stack(decoder_config, self.shared)
 
         self.init_weights()
@@ -1463,6 +1560,7 @@ class T5Model(T5PreTrainedModel):
         head_mask=None,
         output_attentions=None,
         output_hidden_states=None,
+        return_dict=None
     ):
         r"""
     Returns:
@@ -1499,6 +1597,13 @@ class T5Model(T5PreTrainedModel):
             >>> last_hidden_states = outputs[0]  # The last hidden-state is the first element of the output tuple
         """
         use_cache = use_cache if use_cache is not None else self.config.use_cache
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        # FutureWarning: head_mask was separated into two input args - head_mask, decoder_head_mask
+        if head_mask is not None and decoder_head_mask is None:
+            if self.config.num_layers == self.config.num_decoder_layers:
+                warnings.warn(__HEAD_MASK_WARNING_MSG, FutureWarning)
+                decoder_head_mask = head_mask
 
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
@@ -1509,6 +1614,13 @@ class T5Model(T5PreTrainedModel):
                 head_mask=head_mask,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+         elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
+            encoder_outputs = BaseModelOutput(
+                last_hidden_state=encoder_outputs[0],
+                hidden_states=encoder_outputs[1] if len(encoder_outputs) > 1 else None,
+                attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
             )
 
         hidden_states = encoder_outputs[0]
@@ -1530,16 +1642,30 @@ class T5Model(T5PreTrainedModel):
             encoder_hidden_states=hidden_states,
             encoder_attention_mask=attention_mask,
             head_mask=head_mask,
+            cross_attn_head_mask=cross_attn_head_mask,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
         )
 
         if use_cache is True:
             past = ((encoder_outputs, decoder_outputs[1]),)
             decoder_outputs = decoder_outputs[:1] + past + decoder_outputs[2:]
 
-        return decoder_outputs + encoder_outputs
+        if not return_dict:
+            return decoder_outputs + encoder_outputs
+
+        return Seq2SeqModelOutput(
+            last_hidden_state=decoder_outputs.last_hidden_state,
+            past_key_values=decoder_outputs.past_key_values,
+            decoder_hidden_states=decoder_outputs.hidden_states,
+            decoder_attentions=decoder_outputs.attentions,
+            cross_attentions=decoder_outputs.cross_attentions,
+            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+            encoder_hidden_states=encoder_outputs.hidden_states,
+            encoder_attentions=encoder_outputs.attentions,
+        )
 
 
 class T5ForConditionalGeneration(T5PreTrainedModel):
@@ -1551,10 +1677,14 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
 
         encoder_config = copy.deepcopy(config)
         encoder_config.use_cache = False
+        encoder_config.is_encoder_decoder = False
+        encoder_config.is_decoder = False
         self.encoder = T5Stack(encoder_config, self.shared)
 
         decoder_config = copy.deepcopy(config)
-        decoder_config.is_decoder = True
+         decoder_config.is_decoder = True
+        decoder_config.is_encoder_decoder = False
+        decoder_config.num_layers = config.num_decoder_layers
         self.decoder = T5Stack(decoder_config, self.shared)
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
@@ -1588,11 +1718,13 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         decoder_past_key_value_states=None,
         use_cache=None,
         labels=None,
+        past_key_value_states=past_key_value_state
         inputs_embeds=None,
         decoder_inputs_embeds=None,
         head_mask=None,
         output_attentions=None,
         output_hidden_states=None,
+        return_dict=None,
         **kwargs
     ):
         r"""
@@ -1652,6 +1784,13 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         assert kwargs == {}, f"Unexpected keyword arguments: {list(kwargs.keys())}."
 
         use_cache = use_cache if use_cache is not None else self.config.use_cache
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        # FutureWarning: head_mask was separated into two input args - head_mask, decoder_head_mask
+        if head_mask is not None and decoder_head_mask is None:
+            if self.config.num_layers == self.config.num_decoder_layers:
+                warnings.warn(__HEAD_MASK_WARNING_MSG, FutureWarning)
+                decoder_head_mask = head_mask
 
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
@@ -1663,6 +1802,13 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
                 head_mask=head_mask,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+        elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
+            encoder_outputs = BaseModelOutput(
+                last_hidden_state=encoder_outputs[0],
+                hidden_states=encoder_outputs[1] if len(encoder_outputs) > 1 else None,
+                attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
             )
 
         hidden_states = encoder_outputs[0]
@@ -1689,9 +1835,11 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
             encoder_hidden_states=hidden_states,
             encoder_attention_mask=attention_mask,
             head_mask=head_mask,
+            cross_attn_head_mask=cross_attn_head_mask,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
         )
 
         # insert decoder past at right place
@@ -1713,18 +1861,56 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
             # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
             decoder_outputs = (loss,) + decoder_outputs
 
-        return decoder_outputs + encoder_outputs
+       if not return_dict:
+            output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
+            return ((loss,) + output) if loss is not None else output
 
-    def prepare_inputs_for_generation(self, input_ids, past, attention_mask, use_cache, **kwargs):
-        assert past is not None, "past has to be defined for encoder_outputs"
+        return Seq2SeqLMOutput(
+            loss=loss,
+            logits=lm_logits,
+            past_key_values=decoder_outputs.past_key_values,
+            decoder_hidden_states=decoder_outputs.hidden_states,
+            decoder_attentions=decoder_outputs.attentions,
+            cross_attentions=decoder_outputs.cross_attentions,
+            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+            encoder_hidden_states=encoder_outputs.hidden_states,
+            encoder_attentions=encoder_outputs.attentions,
+        )
 
-        encoder_outputs, decoder_past_key_value_states = past
+    def prepare_inputs_for_generation(
+        self,
+        input_ids,
+        past_key_value_states=None,
+        attention_mask=None,
+        head_mask=None,
+        decoder_head_mask=None,
+        decoder_attention_mask=None,
+        cross_attn_head_mask=None,
+        use_cache=None,
+        encoder_outputs=None,
+        **kwargs,
+    ):
+        if past_key_value_states is not None:
+            past_length = past_key_values[0][0].shape[2]
+
+            # Some generation methods already pass only the last input ID
+            if input_ids.shape[1] > past_length:
+                remove_prefix_length = past_length
+            else:
+                # Default to old behavior: keep only final ID
+                remove_prefix_length = input_ids.shape[1] - 1
+
+            input_ids = input_ids[:, remove_prefix_length:]
 
         return {
             "decoder_input_ids": input_ids,
-            "decoder_past_key_value_states": decoder_past_key_value_states,
+            "past_key_value_states": past_key_value_states,
             "encoder_outputs": encoder_outputs,
             "attention_mask": attention_mask,
+            "head_mask": head_mask,
+            "decoder_head_mask": decoder_head_mask,
+            "decoder_attention_mask": decoder_attention_mask,
+            "cross_attn_head_mask": cross_attn_head_mask,
             "use_cache": use_cache,
         }
 
@@ -1780,7 +1966,7 @@ class MyT5Pretrain(T5ForConditionalGeneration):
         decoder_input_ids=None, decoder_attention_mask=None,input_node_ids = None, input_edge_ids = None,
         node_length=None, edge_length=None, adj_matrix=None, decoder_whole_ids=None, word_length=None,
         decoder_past_key_value_states=None, use_cache=False, inputs_embeds=None, decoder_inputs_embeds=None, head_mask=None,
-        output_attentions=None, output_hidden_states=None, is_training=False):
+        output_attentions=None, output_hidden_states=None, return_dict=None, is_training=False):
 
         if is_training:
             _decoder_input_ids = self._shift_right(decoder_input_ids)
@@ -1801,6 +1987,13 @@ class MyT5Pretrain(T5ForConditionalGeneration):
                 head_mask=head_mask,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+        elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
+            encoder_outputs = BaseModelOutput(
+                last_hidden_state=encoder_outputs[0],
+                hidden_states=encoder_outputs[1] if len(encoder_outputs) > 1 else None,
+                attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
             )
 
         hidden_states = encoder_outputs[0]
@@ -1824,9 +2017,11 @@ class MyT5Pretrain(T5ForConditionalGeneration):
             encoder_hidden_states=hidden_states,
             encoder_attention_mask=attention_mask,
             head_mask=head_mask,
+            cross_attn_head_mask=cross_attn_head_mask,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
+            return_dict=return_dict
         )
 
         # insert decoder past at right place
@@ -1881,7 +2076,21 @@ class MyT5Pretrain(T5ForConditionalGeneration):
                 loss_enc = nn.CrossEntropyLoss(ignore_index=-1)
                 loss = loss_enc(lm_logits_encoder.view(-1, self.config.vocab_size), encoder_label.view(-1))
                 return loss
-        return decoder_outputs + encoder_outputs
+        if not return_dict:
+            output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
+            return ((loss,) + output) if loss is not None else output
+
+        return Seq2SeqLMOutput(
+            loss=loss,
+            logits=lm_logits,
+            past_key_values=decoder_outputs.past_key_values,
+            decoder_hidden_states=decoder_outputs.hidden_states,
+            decoder_attentions=decoder_outputs.attentions,
+            cross_attentions=decoder_outputs.cross_attentions,
+            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+            encoder_hidden_states=encoder_outputs.hidden_states,
+            encoder_attentions=encoder_outputs.attentions,
+        )
 
 
 class MyT5ForConditionalGeneration(T5ForConditionalGeneration):
@@ -1909,7 +2118,7 @@ class MyT5ForConditionalGeneration(T5ForConditionalGeneration):
         decoder_input_ids=None, decoder_attention_mask=None,input_node_ids = None, input_edge_ids = None,
         node_length=None, edge_length=None, adj_matrix=None,
         decoder_past_key_value_states=None, use_cache=False, inputs_embeds=None, decoder_inputs_embeds=None, head_mask=None,
-        output_attentions=None, output_hidden_states=None, is_training=False):
+        output_attentions=None, output_hidden_states=None, return_dict=None, is_training=False):
 
         if is_training:
             _decoder_input_ids = self._shift_right(decoder_input_ids)
@@ -1930,6 +2139,13 @@ class MyT5ForConditionalGeneration(T5ForConditionalGeneration):
                 head_mask=head_mask,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+        elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
+            encoder_outputs = BaseModelOutput(
+                last_hidden_state=encoder_outputs[0],
+                hidden_states=encoder_outputs[1] if len(encoder_outputs) > 1 else None,
+                attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
             )
 
         hidden_states = encoder_outputs[0]
@@ -1952,9 +2168,11 @@ class MyT5ForConditionalGeneration(T5ForConditionalGeneration):
             encoder_hidden_states=hidden_states,
             encoder_attention_mask=attention_mask,
             head_mask=head_mask,
+            cross_attn_head_mask=cross_attn_head_mask,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
         )
 
         # insert decoder past at right place
@@ -1976,7 +2194,22 @@ class MyT5ForConditionalGeneration(T5ForConditionalGeneration):
             loss = loss_fct(lm_logits_decoder.view(-1, self.config.vocab_size), decoder_input_ids.view(-1))
             decoder_outputs = (loss,) + decoder_outputs
             return loss
-        return decoder_outputs + encoder_outputs
+        if not return_dict:
+            output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
+            return ((loss,) + output) if loss is not None else output
+
+        return Seq2SeqLMOutput(
+            loss=loss,
+            logits=lm_logits,
+            past_key_values=decoder_outputs.past_key_values,
+            decoder_hidden_states=decoder_outputs.hidden_states,
+            decoder_attentions=decoder_outputs.attentions,
+            cross_attentions=decoder_outputs.cross_attentions,
+            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+            encoder_hidden_states=encoder_outputs.hidden_states,
+            encoder_attentions=encoder_outputs.attentions,
+        )
+
 
     @torch.no_grad()
     def generate(
@@ -2270,6 +2503,12 @@ class MyT5ForConditionalGeneration(T5ForConditionalGeneration):
 
             # get encoder and store encoder outputs
             encoder = self.get_encoder()
+            encoder_kwargs = {
+                argument: value
+                for argument, value in model_kwargs.items()
+                if not (argument.startswith("decoder_") or argument.startswith("cross_attn"))
+            }
+            model_kwargs["encoder_outputs"]: ModelOutput = encoder(input_ids, return_dict=True, **encoder_kwargs)
 
             # add structural information to encoder
             encoder_outputs: tuple = encoder(input_ids, attention_mask=attention_mask, input_node_ids=input_node_ids, \
