@@ -1099,7 +1099,6 @@ class T5Stack(T5PreTrainedModel):
         encoder_attention_mask=None,
         inputs_embeds=None,
         head_mask=None,
-        cross_attn_head_mask=None,
         past_key_value_states=None,
         use_cache=None,
         output_attentions=None,
@@ -1181,7 +1180,6 @@ class T5Stack(T5PreTrainedModel):
         # Prepare head mask if needed
         head_mask = self.get_head_mask(head_mask, self.config.num_layers)
         present_key_value_states = ()
-        cross_attn_head_mask = self.get_head_mask(cross_attn_head_mask, self.config.num_layers)
         present_key_value_states = () if use_cache else None
         all_hidden_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
@@ -1193,7 +1191,6 @@ class T5Stack(T5PreTrainedModel):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
             layer_head_mask = head_mask[i]
-            cross_attn_layer_head_mask = cross_attn_head_mask[i]
 
             if self.gradient_checkpointing and self.training:
                 layer_outputs = self._gradient_checkpointing_func(
@@ -1409,7 +1406,6 @@ class T5StructStack(T5PreTrainedModel):
 
         # Prepare head mask if needed
         head_mask = self.get_head_mask(head_mask, self.config.num_layers)
-        cross_attn_head_mask = self.get_head_mask(cross_attn_head_mask, self.config.num_layers)
         present_key_value_states = () if use_cache else None
         all_hidden_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
@@ -1420,7 +1416,6 @@ class T5StructStack(T5PreTrainedModel):
 
         for i, (layer_module, past_key_value_state) in enumerate(zip(self.block, past_key_value_states)):
             layer_head_mask = head_mask[i]
-            cross_attn_layer_head_mask = cross_attn_head_mask[i]
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
@@ -1650,7 +1645,6 @@ class T5Model(T5PreTrainedModel):
             encoder_hidden_states=hidden_states,
             encoder_attention_mask=attention_mask,
             head_mask=head_mask,
-            cross_attn_head_mask=cross_attn_head_mask,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
@@ -1843,7 +1837,6 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
             encoder_hidden_states=hidden_states,
             encoder_attention_mask=attention_mask,
             head_mask=head_mask,
-            cross_attn_head_mask=cross_attn_head_mask,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
@@ -1893,7 +1886,6 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         head_mask=None,
         decoder_head_mask=None,
         decoder_attention_mask=None,
-        cross_attn_head_mask=None,
         use_cache=None,
         encoder_outputs=None,
         **kwargs,
@@ -1918,7 +1910,6 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
             "head_mask": head_mask,
             "decoder_head_mask": decoder_head_mask,
             "decoder_attention_mask": decoder_attention_mask,
-            "cross_attn_head_mask": cross_attn_head_mask,
             "use_cache": use_cache,
         }
 
@@ -2025,7 +2016,6 @@ class MyT5Pretrain(T5ForConditionalGeneration):
             encoder_hidden_states=hidden_states,
             encoder_attention_mask=attention_mask,
             head_mask=head_mask,
-            cross_attn_head_mask=cross_attn_head_mask,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
@@ -2176,7 +2166,6 @@ class MyT5ForConditionalGeneration(T5ForConditionalGeneration):
             encoder_hidden_states=hidden_states,
             encoder_attention_mask=attention_mask,
             head_mask=head_mask,
-            cross_attn_head_mask=cross_attn_head_mask,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
